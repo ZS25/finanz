@@ -1,0 +1,82 @@
+package com.zs.migration.service;
+
+import com.zs.migration.api.vo.user.UserMigrationVO;
+import com.zs.migration.api.vo.user.response.UserResponseVO;
+import org.springframework.transaction.annotation.Transactional;
+
+import javax.jws.WebMethod;
+import javax.jws.WebService;
+import javax.ws.rs.Consumes;
+import javax.ws.rs.FormParam;
+import javax.ws.rs.GET;
+import javax.ws.rs.POST;
+import javax.ws.rs.Path;
+import javax.ws.rs.Produces;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+
+
+@WebService
+@Path("/wrapper/")
+public interface IMigrationWebService {
+
+	@WebMethod
+	@POST
+	@Path("/migrateDossierCompressed")
+	@Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+	@Produces(MediaType.APPLICATION_JSON)	
+	public Response migrateDossierCompressed(@FormParam("tenant") String tenant, @FormParam("jsonData") String jsonData);
+
+	@WebMethod
+	@POST
+	@Path("/migrateGedOneFileNDossier")
+	@Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+	@Produces(MediaType.APPLICATION_JSON)
+	public Response migrateGedOneFileNDossier(@FormParam("tenant") String tenant, @FormParam("jsonData") String jsonData);
+
+	@WebMethod
+	@POST
+	@Path("/migrateGedNFileOneDossier")
+	@Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+	@Produces(MediaType.APPLICATION_JSON)
+	public Response migrateGedNFileOneDossier(@FormParam("tenant") String tenant, @FormParam("jsonData") String jsonData);
+
+	@WebMethod
+	@POST
+	@Path("/migrateReversements")
+	@Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+	@Produces(MediaType.APPLICATION_JSON)
+	public Response migrateReversements(@FormParam("tenant") String tenant, @FormParam("jsonData") String jsonData);
+
+
+	@WebMethod
+	@POST
+	@Path("/startByMandat")
+	@Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+	public Response startWorkflowsByMandat(@FormParam("nomMandat") String nomMandat , @FormParam("limit") int maxResults);
+
+	@WebMethod
+	@POST
+	@Path("/start")
+	@Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+	public Response startWorkflows(@FormParam("tenant") String tenant,@FormParam("nomMandat") String nomMandat);
+
+
+	@WebMethod
+	@POST
+	@Path("/runPaymentRef")
+	@Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+	public Response updatePaymentReferences();
+
+	@WebMethod
+	@GET
+	@Produces(MediaType.APPLICATION_JSON)
+	@Path("/check")
+	public Response check();
+
+	@WebMethod
+	@POST
+	@Consumes({"application/json","application/xml" })
+	@Path("/MigrationUsers/userMig")
+	public Response migrateUser(UserMigrationVO userMigrationVO);
+}

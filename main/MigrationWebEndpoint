@@ -1,0 +1,297 @@
+/**
+ * 
+ */
+package com.zs.migration.web;
+
+import com.zs.migration.afterjob.service.IAfterMigrationService;
+import com.zs.migration.api.vo.AsyncMigrationResponse;
+import com.zs.migration.api.vo.MigrationResponseVO;
+import com.zs.migration.api.vo.MigrationWrapperVO;
+import com.zs.migration.api.vo.ged.MigrationGedWrapperVO;
+import com.zs.migration.api.vo.ged.wrapper.MigrationGedNDossierWrapperVO;
+import com.zs.migration.api.vo.reversement.ReversementMigrationVO;
+import com.zs.migration.api.vo.user.UserMigrationVO;
+import com.zs.migration.api.vo.user.response.UserResponseVO;
+import com.zs.migration.exceptions.GeneralMigrationException;
+import com.zs.migration.exceptions.GeneralValidationException;
+import com.zs.migration.service.IDossierWorkflowMigrationService;
+import com.zs.migration.service.IMigrationService;
+import com.zs.migration.service.IMigrationWebService;
+import com.zs.migration.service.ged.IGedNDossierServiceMigration;
+import com.zs.migration.service.ged.IGedServiceMigration;
+import com.zs.migration.service.reversement.IReversementServiceMigration;
+import com.zs.migration.service.user.IUserServiceMigration;
+import com.zs.migration.utils.CompressionUtils;
+import com.zs.migration.utils.MigrationPerformanceMonitor;
+import com.zs.migration.utils.MigrationResponseHelper;
+import com.zs.migration.utils.MigrationResponseStatusEnum;
+import com.zs.migration.validator.MigrationValidator;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.type.TypeFactory;
+import org.apache.http.HttpStatus;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationContext;
+
+import javax.annotation.Resource;
+import javax.ws.rs.core.Response;
+import java.io.IOException;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Date;
+import java.util.List;
+import java.util.zip.DataFormatException;
+
+/**
+ * @author zsooruth
+ *
+ */
+public class MigrationWebEndpoint implements IMigrationWebService {
+
+	private static final Logger LOGGER = LoggerFactory.getLogger(MigrationWebEndpoint.class);
+
+	@Resource
+	private ApplicationContext applicationContext;
+
+	@Resource
+	private MigrationResponseHelper migrationResponseHelper;
+
+	@Resource
+	private MigrationValidator migrationValidator;
+
+	@Resource
+	private IAfterMigrationService afterMigrationService;
+
+	@Resource
+	private IDossierWorkflowMigrationService dossierWorkflowMigrationService;
+
+
+	private ObjectMapper objectMapper = new ObjectMapper();
+
+	public Response migrateDossierCompressed(String tenant, String jsonData) {
+		MigrationWrapperVO vo = null;
+		String decompressedData = null;
+		long start = System.currentTimeMillis();
+		MigrationResponseVO migrationResponseVO = new MigrationResponseVO();
+		MigrationResponseStatusEnum migrationResponseStatusEnum = MigrationResponseStatusEnum.OK;
+		Date dateSubmited = new Date();
+		Long idV3 = 0L;
+		long startAt = MigrationPerformanceMonitor.getStartAt();
+		try {
+//			jsonData = URLDecoder.decode(jsonData, StandardCharsets.UTF_8.toString());
+			decompressedData = CompressionUtils.decompress(jsonData);
+			MigrationPerformanceMonitor.logExecutionTime(startAt, "migrateDossierCompressed -> CompressionUtils.decompress(jsonData)");
+			vo = objectMapper.readValue(decompressedData, MigrationWrapperVO.class);
+			LOGGER.debug("Migrate Dossier : "+vo.getDossierVO().getIdV3());
+			idV3=vo.getDossierVO().getIdV3();
+			startAt = MigrationPerformanceMonitor.getStartAt();
+			applicationContext.getBean(IMigrationService.class).migrateDataInternal(vo, migrationResponseVO);
+			MigrationPerformanceMonitor.logExecutionTime(startAt, "migrateDossierCompressed -> migrateDataInternal");
+			LOGGER.debug("Migrate Dossier end : "+vo.getDossierVO().getIdV3());
+		} catch(IOException | DataFormatException ex) {
+
+			LOGGER.error("Error reading jsonData", ex);
+			return Response.status(HttpStatus.SC_OK).entity("Error reading jsonData "+dateSubmited.toString()+": "+ex.getMessage()).build();
+		}catch(GeneralValidationException e){
+			LOGGER.error("migrateData() GeneralValidationException", e);
+			migrationResponseStatusEnum = MigrationResponseStatusEnum.BAD_REQUEST;
+			// do nothing,
+			// this exception is only thrown to rollback the transaction created by createVersementListInternal when validation fails
+			// also, no need to log the exception because it has been logged when it was first caught
+
+		}catch(GeneralMigrationException e){
+			LOGGER.error("migrateData() GeneralValidationException", e);
+			migrationResponseStatusEnum = MigrationResponseStatusEnum.INTERNAL_SERVER_ERROR;
+			// do nothing, this exception is only thrown so that the correct status code is returned in the response:
+            /* The inner methods log the exceptions because the failing serviceClass needs to be determined,
+            *  but then a MigrationLoggedException is thrown so that the parent knows to set the responseStatus
+            *  to INTERNAL_SERVER_ERROR without adding the exception again */
+			// also, no need to log the exception because it has been logged when it was first caught
+
+		}catch(Exception e){
+
+			migrationResponseStatusEnum = MigrationResponseStatusEnum.INTERNAL_SERVER_ERROR;
+			LOGGER.error("ERROR - save failed - ", e);
+			migrationValidator.recordException(e, migrationResponseVO);
+		}
+
+		return migrationResponseHelper.buildMigrationServiceResponse(migrationResponseVO, migrationResponseStatusEnum,dateSubmited);
+	}
+
+	@Override
+	public Response migrateReversements(String tenant, String jsonData) {
+		List<ReversementMigrationVO> listReversementVO =null;
+		Response responseRev=null;
+
+		try {
+			listReversementVO= objectMapper.readValue(jsonData, TypeFactory.defaultInstance().constructCollectionType(List.class, ReversementMigrationVO.class));
+
+			if (listReversementVO == null) {
+				throw new GeneralMigrationException("Something went wrong with deserializing listReversementVO");
+			}
+
+			IReversementServiceMigration reversementServiceMigration = applicationContext.getBean(IReversementServiceMigration.class);
+			responseRev = reversementServiceMigration.migrateReversements(listReversementVO);
+
+		} catch (IOException e) {
+			LOGGER.error("Could not extract the object from the Json string!", e);
+
+		}catch(GeneralMigrationException e){
+			LOGGER.error("Something went wrong with deserializing listReversementVO",e);
+		}
+
+		AsyncMigrationResponse response = new AsyncMigrationResponse();
+		response.setDateSubmitted(new Date());
+		response.setResponceReversement(responseRev);
+
+		return Response.ok(response).build();
+	}
+
+	@Override
+	public Response migrateGedOneFileNDossier(String tenant, String jsonData) {
+		MigrationGedNDossierWrapperVO vo = null;
+		String decompressedData = null;
+		long start = System.currentTimeMillis();
+		Response responseGed=null;
+		Date dateSubmited = new Date();
+		long startAt = MigrationPerformanceMonitor.getStartAt();
+		try {
+			jsonData = URLDecoder.decode(jsonData, StandardCharsets.UTF_8.toString());
+			decompressedData = CompressionUtils.decompress(jsonData);
+			MigrationPerformanceMonitor.logExecutionTime(startAt, "migrateGedOneFileNDossier -> CompressionUtils.decompress");
+
+			vo = objectMapper.readValue(decompressedData, MigrationGedNDossierWrapperVO.class);
+			LOGGER.info("Migration GedOneFileNDossier AR : "+vo.getFileARVOs().size()+"  / CIR : "+vo.getFileCIRVOs().size());
+			startAt = MigrationPerformanceMonitor.getStartAt();
+			responseGed=applicationContext.getBean(IGedNDossierServiceMigration.class).migrateGedOneFileForNdossier(vo);
+			MigrationPerformanceMonitor.logExecutionTime(startAt, "migrateGedOneFileNDossier -> migrateGedOneFileForNdossier");
+
+		} catch (IOException | DataFormatException ex) {
+
+			LOGGER.error("Error reading jsonData : ", ex);
+			return Response.status(HttpStatus.SC_OK).entity("Error reading jsonData "+dateSubmited.toString()+" : "+ex.getMessage()).build();
+		}
+		catch(Exception e){
+			StringBuilder sb = new StringBuilder();
+			for (StackTraceElement ste : e.getStackTrace()) {
+				sb.append(ste.toString());
+			}
+			LOGGER.error("ERROR - GED migrateGedOneFileNDossier migration failed - ", sb.toString());
+			return Response.status(HttpStatus.SC_OK).entity("ERROR - GED  migrateGedOneFileNDossier migration failed: "+ e).build();
+		}
+
+
+		AsyncMigrationResponse response = new AsyncMigrationResponse();
+		response.setDateSubmitted(dateSubmited);
+		response.setVo(vo);
+		response.setJsonSizeCompressed(jsonData.length());
+		response.setJsonSizeDecompressed(decompressedData.length());
+		response.setDecompressionTimeInMilliseconds((System.currentTimeMillis() - start));
+		response.setResponceGed(responseGed);
+
+		return Response.ok(response).build();
+	}
+
+	@Override
+	public Response migrateGedNFileOneDossier(String tenant, String jsonData) {
+		MigrationGedWrapperVO vo = null;
+		String decompressedData = null;
+		long start = System.currentTimeMillis();
+		Response responseGed=null;
+		Date dateSubmited = new Date();
+		long startAt = MigrationPerformanceMonitor.getStartAt();
+		try {
+			jsonData = URLDecoder.decode(jsonData, StandardCharsets.UTF_8.toString());
+			decompressedData = CompressionUtils.decompress(jsonData);
+			MigrationPerformanceMonitor.logExecutionTime(startAt, "migrateGedNFileOneDossier -> CompressionUtils.decompress");
+
+			vo = objectMapper.readValue(decompressedData, MigrationGedWrapperVO.class);
+			LOGGER.info("Migration GedNFileOneDossier Dossier : "+vo.getIdDossierMars());
+			startAt = MigrationPerformanceMonitor.getStartAt();
+			responseGed=applicationContext.getBean(IGedServiceMigration.class).migrateGed(vo);
+			MigrationPerformanceMonitor.logExecutionTime(startAt, "migrateGedNFileOneDossier -> migrateGed");
+
+		} catch (IOException | DataFormatException ex) {
+			LOGGER.error("Error reading jsonData", ex);
+			return Response.status(HttpStatus.SC_OK).entity("Error reading jsonData "+dateSubmited.toString()+" : "+ex.getMessage()).build();
+		}
+		catch(Exception e){
+			StringBuilder sb = new StringBuilder();
+			for (StackTraceElement ste : e.getStackTrace()) {
+				sb.append(ste.toString());
+			}
+			LOGGER.error("ERROR - GED migrateGedNFileOneDossier migration failed - ", e);
+			return Response.status(HttpStatus.SC_OK).entity("ERROR - GED  migrateGedOneFileNDossier migration failed: "+ e.getMessage()).build();
+		}
+
+		AsyncMigrationResponse response = new AsyncMigrationResponse();
+		response.setIdDossierV3(Long.parseLong(vo.getIdDossierV3()));
+		response.setDateSubmitted(dateSubmited);
+		response.setVo(vo);
+		response.setJsonSizeCompressed(jsonData.length());
+		response.setJsonSizeDecompressed(decompressedData.length());
+		response.setDecompressionTimeInMilliseconds((System.currentTimeMillis() - start));
+		response.setResponceGed(responseGed);
+
+		return Response.ok(response).build();
+	}
+
+	@Override
+	public Response startWorkflowsByMandat(String nomMandat , int maxResults){
+
+		try {
+			dossierWorkflowMigrationService.startWorkflowsByMandat(nomMandat , maxResults);
+
+		} catch(Exception e){
+
+			LOGGER.error("ERROR - Start Workflow By Mandat failed - ", e);
+		}
+
+		return Response.ok().build();
+	}
+
+	@Override
+	public Response startWorkflows(String tenant,String nomMandat){
+
+		try {
+			dossierWorkflowMigrationService.startWorkflows(nomMandat);
+
+		} catch(Exception e){
+
+			LOGGER.error("ERROR - Start Workflow failed - ", e);
+		}
+
+		return Response.ok().build();
+	}
+
+	@Override
+	public Response updatePaymentReferences(){
+		try {
+			this.afterMigrationService.updatePaymentReferences();
+
+		} catch(Exception e){
+
+			LOGGER.error("ERROR - Start Payment transaction - ", e);
+		}
+		return Response.ok().build();
+	}
+
+
+	public Response  check() {
+		Response.ResponseBuilder responseBuilder = Response.ok();
+		return responseBuilder.build();
+	}
+
+	public Response migrateUser(UserMigrationVO userMigrationVO) {
+		Response responseUser=null;
+		try {
+			IUserServiceMigration userServiceMigration = applicationContext.getBean(IUserServiceMigration.class);
+			responseUser = userServiceMigration.migrateUser(userMigrationVO);
+		}
+		catch(Exception e){
+			LOGGER.error("ERROR - User migration failed - ", e);
+			return Response.status(HttpStatus.SC_OK).entity("ERROR - User migration failed for idutilisateurV3 -  "+ userMigrationVO.getIdutilisateurV3()+" : "+e.getMessage()).build();
+		}
+		return responseUser;
+	}
+}

@@ -1,0 +1,219 @@
+package com.zs.migration;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.lang.reflect.Method;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.util.List;
+import javax.ws.rs.core.Response;
+
+import com.zs.migration.api.vo.ged.MigrationGedWrapperVO;
+import com.zs.migration.api.vo.ged.wrapper.MigrationGedNDossierWrapperVO;
+import com.zs.migration.api.vo.reversement.ReversementMigrationVO;
+import com.zs.migration.service.ged.IGedNDossierServiceMigration;
+import com.zs.migration.service.ged.IGedServiceMigration;
+import com.zs.migration.service.impl.MigrationServiceImpl;
+import com.zs.migration.service.reversement.IReversementServiceMigration;
+import com.fasterxml.jackson.databind.type.TypeFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.support.ClassPathXmlApplicationContext;
+import org.springframework.util.ResourceUtils;
+import com.zs.commons.containers.TenantContainer;
+import com.zs.migration.api.vo.MigrationWrapperVO;
+import com.zs.migration.exceptions.GeneralMigrationException;
+import com.zs.migration.service.IMigrationWebService;
+import com.zs.migration.update.api.vo.wrapper.PersonalFieldUpdateWrapperVO;
+import com.zs.migration.update.service.IMigrationJob;
+import com.zs.migration.utils.MigrationResponseHelper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.joran.JoranConfigurator;
+import ch.qos.logback.core.joran.spi.JoranException;
+import ch.qos.logback.core.util.StatusPrinter;
+
+/**
+ * Created by zsooruth on 1/24/2017.
+ */
+public class MigrationEndpoint {
+
+    private final Logger logger = LoggerFactory.getLogger(MigrationEndpoint.class);
+
+    // Static reference to spring context
+    private ClassPathXmlApplicationContext context;
+
+    private ObjectMapper objectMapper;
+
+    public MigrationEndpoint(String configLibDirectory){
+
+        logger.debug("Adding classpathResource: {}", configLibDirectory);
+        addResources(configLibDirectory);
+        initialiseLogback("MigrationContext", "classpath:MigrationService/logback.xml");
+        context = new ClassPathXmlApplicationContext("classpath:MigrationService/jar-specific-application-context.xml");
+        this.objectMapper = new ObjectMapper();
+        logger.info("Exiting successfully!");
+
+    }
+
+    public static void main(String[] args) {
+        new MigrationEndpoint("C:\\MARS_ENV\\Migration_jar\\localhost");
+    }
+
+    private  LoggerContext initialiseLogback(String contextName, String configFileLocation) {
+        logger.debug("Initialising Logback with: {}", configFileLocation);
+        LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
+        JoranConfigurator configurator = new JoranConfigurator();
+        configurator.setContext(loggerContext);
+        loggerContext.reset();
+        try {
+            File file = ResourceUtils.getFile(configFileLocation);
+            logger.debug("Configuring logging context {} with config: {}",contextName, file.getAbsolutePath());
+            configurator.doConfigure(file);
+        }catch (FileNotFoundException | JoranException e) {
+            logger.error("ERROR: Could not configure logback: " + e.getMessage(),e);
+        }
+        StatusPrinter.printInCaseOfErrorsOrWarnings(loggerContext);
+        logger.debug("Logger configured!");
+        return loggerContext;
+    }
+
+    /**
+     * Convenience method used for adding dynamic resources to classpath
+     * @param configLibDirectory
+     */
+    private void addResources(String configLibDirectory) {
+        if (configLibDirectory != null) {
+            try {
+                File fileToAdd = new File(configLibDirectory);
+                //  URL u = fileToAdd.toURL(); //Depracated
+                URL u = fileToAdd.toURI().toURL();
+
+                ClassLoader sysLoader = ClassLoader.getSystemClassLoader();
+                if (sysLoader instanceof URLClassLoader) {
+                    Class<URLClassLoader> sysLoaderClass = URLClassLoader.class;
+
+                    // use reflection to invoke the private addURL method
+                    Method method = sysLoaderClass.getDeclaredMethod("addURL",URL.class );
+                    method.setAccessible(true);
+                    method.invoke((URLClassLoader) sysLoader, u );
+                }
+            } catch (Exception e) {
+
+                logger.error("Could not add config path to the classpath!" +  e.getMessage(),e);
+            }
+        }else{
+            logger.debug("Could not load config directory to the classpath! The directory path was null! ");
+        }
+    }
+
+//    public String doDossierActions(String tenant, String jsonData) {
+//        addTenantToLocalThread(tenant);
+//        logger.debug("Migration End Point > doDossierActions");
+//        MigrationWrapperVO wrapperVO = (MigrationWrapperVO) buildTargetObjectFromJson(jsonData, MigrationWrapperVO.class);
+//        if (wrapperVO == null) {
+//            throw new GeneralMigrationException("Something went wrong with deserializing wrapperVO");
+//        }
+//
+//        MigrationServiceImpl migrationService = context.getBean(MigrationServiceImpl.class);
+//        migrationService.migrateData(wrapperVO);
+//        Response response = MigrationResponseHelper.toResponse(wrapperVO);
+//
+//        return buildJsonFromObject(response.getEntity());
+//    }
+
+    public String doReversementsActions(String tenant, String jsonData) {
+        addTenantToLocalThread(tenant);
+
+        List<ReversementMigrationVO> listReversementVO =null;
+        try {
+            listReversementVO= objectMapper.readValue(jsonData, TypeFactory.defaultInstance().constructCollectionType(List.class, ReversementMigrationVO.class));
+        } catch (IOException e) {
+            logger.error("Could not extract the object from the Json string!", e);
+        }
+
+        if (listReversementVO == null) {
+            throw new GeneralMigrationException("Something went wrong with deserializing listReversementVO");
+        }
+
+        IReversementServiceMigration reversementServiceMigration = context.getBean(IReversementServiceMigration.class);
+        Response response = reversementServiceMigration.migrateReversements(listReversementVO);
+
+        return buildJsonFromObject(response.getEntity());
+    }
+
+    public String doGedActions(String tenant, String jsonData){
+        addTenantToLocalThread(tenant);
+        logger.debug("MigrationEndPoint > doGedActions ");
+        MigrationGedWrapperVO gedWrapperVO = (MigrationGedWrapperVO) buildTargetObjectFromJson(jsonData, MigrationGedWrapperVO.class);
+        if (gedWrapperVO == null) {
+            throw new GeneralMigrationException("Something went wrong with deserializing gedWrapperVO");
+        }
+
+        IGedServiceMigration gedServiceMigration = context.getBean(IGedServiceMigration.class);
+        Response response = gedServiceMigration.migrateGed(gedWrapperVO);
+
+        return buildJsonFromObject(response.getEntity());
+    }
+
+    public String doGedNDossierActions(String tenant, String jsonData){
+        addTenantToLocalThread(tenant);
+        logger.debug("MigrationEndPoint > doGedNDossierActions ");
+        MigrationGedNDossierWrapperVO gedNWrapperVO = (MigrationGedNDossierWrapperVO) buildTargetObjectFromJson(jsonData, MigrationGedNDossierWrapperVO.class);
+        if (gedNWrapperVO == null) {
+            throw new GeneralMigrationException("Something went wrong with deserializing gedNWrapperVO");
+        }
+
+        IGedNDossierServiceMigration gedNServiceMigration = context.getBean(IGedNDossierServiceMigration.class);
+        Response response = gedNServiceMigration.migrateGedOneFileForNdossier(gedNWrapperVO);
+
+        return buildJsonFromObject(response.getEntity());
+    }
+
+    public String doPersonalFieldsActions(String tenant, String jsonData) {
+
+        addTenantToLocalThread(tenant);
+
+        PersonalFieldUpdateWrapperVO wrapperVO = (PersonalFieldUpdateWrapperVO) buildTargetObjectFromJson(jsonData, PersonalFieldUpdateWrapperVO.class);
+        if (wrapperVO == null) {
+            throw new GeneralMigrationException("Something went wrong with deserializing wrapperVO");
+        }
+
+        String resourceQualifier = "PersonalFieldMigrationUpdateJob";
+        IMigrationJob personalFieldsJob = (IMigrationJob) context.getBean(resourceQualifier);
+        Response response = personalFieldsJob.executeActions(wrapperVO, resourceQualifier);
+
+        return buildJsonFromObject(response.getEntity());
+    }
+
+    private void addTenantToLocalThread(String tenant) {
+        TenantContainer tenantContainer = context.getBean(TenantContainer.class);
+        tenantContainer.setTenant(tenant);
+    }
+
+    /**
+     * Build a target object from a JSON string and target class
+     * @param jsonData
+     * @return
+     */
+    private Object buildTargetObjectFromJson(String jsonData, Class targetClass) {
+        try {
+            return objectMapper.readValue(jsonData, targetClass);
+        } catch (IOException e) {
+            logger.error("Could not extract the object from the Json string!", e);
+        }
+
+        return null;
+    }
+
+    private String buildJsonFromObject(Object target) {
+        try {
+            return objectMapper.writeValueAsString(target);
+        } catch (JsonProcessingException e) {
+            logger.error("Could not serialize to Json from the object!", e);
+        }
+        return null;
+    }
+}
