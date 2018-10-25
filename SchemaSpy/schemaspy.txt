@@ -1,0 +1,4 @@
+Run in download folder containing the jar file:
+
+java -jar schemaSpy_5.0.0.jar -t pgsql -host localhost -db MARSDB -u MARS -p MARS -dp postgresql-9.3-1101-jdbc4.jar -hq -o dsoschema14062017 -all
+
